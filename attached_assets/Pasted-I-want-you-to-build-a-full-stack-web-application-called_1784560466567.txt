@@ -1,0 +1,405 @@
+I want you to build a full-stack web application called Dota League Tracker.
+
+The purpose of this application is to track statistics for my private group of friends who play custom 5v5 Dota 2 matches against each other.
+
+This is NOT a public Dotabuff clone. It is only for my own group, and I am the only administrator.
+
+The application should have a modern dark UI inspired by the Dota 2 client (without copying Valve's assets). Use dark gray backgrounds with gold accents, Radiant green, and Dire red. Make the interface clean, modern, responsive, and smooth.
+
+Authentication
+
+There should only be one administrator (me).
+
+Only the admin can:
+
+Add players
+Edit players
+Delete players
+Upload matches
+Edit matches
+Delete matches
+
+No public registration is needed.
+
+Players
+
+Create a Players page.
+
+Each player should have:
+
+Name
+Optional nickname
+Optional avatar
+Date added
+
+Players are created manually because the players may change over time.
+
+Add Match
+
+The most important feature.
+
+The workflow should be:
+
+Upload a screenshot of a Dota match scoreboard.
+Use AI/OCR to read the screenshot.
+Automatically detect:
+Match duration
+Winner (Radiant or Dire)
+Heroes
+Kills
+Deaths
+Assists
+Final score
+Hero names
+Show all detected data inside editable fields.
+Let me manually assign each detected player to one of the players in my database using dropdowns.
+
+For example:
+
+Player detected:
+
+Void Spirit
+11 / 4 / 22
+
+Dropdown:
+
+▼ Hesham
+
+This is important because player names on Steam may change.
+
+Allow manual correction of every detected value.
+Save the match.
+Match Database
+
+Each match should store:
+
+Date
+Screenshot
+Winner
+Duration
+Final score
+Radiant players
+Dire players
+
+For every player:
+
+Hero
+Kills
+Deaths
+Assists
+
+Store everything permanently.
+
+Dashboard
+
+The home page should show cards such as:
+
+Total Matches
+
+Total Players
+
+Latest Match
+
+Longest Win Streak Ever
+
+Then show leaderboards.
+
+Leaderboards
+
+Create leaderboard cards for:
+
+Most Wins
+
+Most Games Played
+
+Highest Win Rate
+
+Current Win Streak
+
+Longest Win Streak
+
+Highest Average Kills
+
+Highest Average Assists
+
+Lowest Average Deaths
+
+Highest Average KDA
+
+Highest Kill Game
+
+Highest Assist Game
+
+Lowest Death Game
+
+Allow sorting ascending/descending.
+
+Player Profile
+
+Clicking a player opens their profile.
+
+Display:
+
+Player name
+
+Games Played
+
+Wins
+
+Losses
+
+Win Rate
+
+Current Win Streak
+
+Longest Win Streak
+
+Average Kills
+
+Average Deaths
+
+Average Assists
+
+Average KDA
+
+Most Kills
+
+Most Assists
+
+Lowest Deaths
+
+Recent Matches
+
+Rivalries
+
+Create a Rivalries page.
+
+Allow selecting two players.
+
+Show:
+
+Games Against Each Other
+
+Player A Wins
+
+Player B Wins
+
+Win Percentage
+
+Average KDA for both
+
+Longest Winning Streak
+
+Recent Matches Together
+
+This page should be visually attractive.
+
+Best Teammates
+
+For every player calculate:
+
+Best teammate
+
+Example:
+
+Hesham + Ibrahim
+
+Played together:
+
+48 games
+
+Win rate:
+
+81%
+
+Also calculate the worst teammate.
+
+Match Gallery
+
+Create a page called Screenshot Gallery.
+
+Every uploaded match should appear as a card.
+
+Card displays:
+
+Date
+
+Winner
+
+Duration
+
+Thumbnail
+
+Clicking opens a page showing:
+
+Large screenshot
+
+Match information
+
+Players
+
+Heroes
+
+KDA
+
+Winner
+
+Search
+
+Allow searching:
+
+Player names
+
+Hero names
+
+Dates
+
+Matches
+
+Statistics Engine
+
+Automatically calculate after every new match:
+
+Wins
+
+Losses
+
+Games Played
+
+Win Rate
+
+Average Kills
+
+Average Deaths
+
+Average Assists
+
+Average KDA
+
+Current Win Streak
+
+Longest Win Streak
+
+Best Teammate
+
+Worst Teammate
+
+Nemesis (player who beats them most)
+
+Favorite Victim (player they beat most)
+
+Highest Kill Game
+
+Highest Assist Game
+
+Lowest Death Game
+
+Everything should update automatically.
+
+Charts
+
+Create charts for:
+
+Win Rate Over Time
+
+Games Played Over Time
+
+Wins Per Month
+
+Player Activity
+
+Future-proof Database
+
+Design the database so it can easily support future features.
+
+Suggested tables:
+
+Players
+
+Matches
+
+MatchPlayers
+
+Heroes
+
+Statistics
+
+UI
+
+Design requirements:
+
+Modern
+Responsive
+Desktop-first
+Beautiful animations
+Rounded cards
+Glassmorphism where appropriate
+Dota-inspired colors
+Clean typography
+Large statistics cards
+Hero icons if available
+Nice loading animations
+Technology
+
+Use modern technologies.
+
+Recommended stack:
+
+React
+TypeScript
+Tailwind CSS
+Node.js
+Express
+PostgreSQL (or Supabase)
+Drizzle ORM or Prisma
+OpenAI Vision (or equivalent OCR/vision model) for screenshot parsing
+AI Extraction
+
+The AI should analyze uploaded screenshots and extract:
+
+Winner
+Duration
+Final score
+Hero names
+KDA
+Team assignment
+
+The extracted data should always be editable before saving.
+
+Performance
+
+The app should be fast and optimized.
+
+Use pagination for matches.
+
+Lazy load screenshots.
+
+Optimize database queries.
+
+Code Quality
+
+Write clean, modular, production-quality code.
+
+Organize components properly.
+
+Use reusable UI components.
+
+Follow best practices.
+
+Avoid duplicated logic.
+
+Use TypeScript everywhere.
+
+Nice Extras
+
+If possible, also implement:
+
+🏆 Hall of Fame (all-time records)
+📅 Seasons (optional)
+🎖 Achievement badges (Longest streak, Highest KDA, etc.)
+🔥 "Player of the Week" based on recent matches
+⭐ Favorite Hero for each player
+📈 Improvement graph over time
+📊 Team synergy statistics
+⚔ Nemesis statistics
+🤝 Best duo statistics
