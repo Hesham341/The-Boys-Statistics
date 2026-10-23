@@ -1,0 +1,355 @@
+# Managed commit snapshots by Hesham341/release-automation
+name: Commit snapshots on push
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: commit-snapshots-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  snapshots:
+    if: github.event_name != 'push' || github.event.deleted == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Snapshot missing commits in this repository
+        env:
+          GH_TOKEN: ${{ secrets.COMMIT_SNAPSHOTS_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo 'COMMIT_SNAPSHOTS_TOKEN is missing' >&2; exit 1; fi
+          python3 - --owner "$GITHUB_REPOSITORY_OWNER" --repository "$GITHUB_REPOSITORY" <<'PY'
+          """Daily source snapshots. Only Git data is read; repository code is never executed."""
+          import os
+          import subprocess
+          import html
+          import json
+          import time
+          import urllib.request
+          import urllib.error
+          import urllib.parse
+          
+          
+          class GitHub:
+              def __init__(self, token, base_url='https://api.github.com'):
+                  self.token = token
+                  self.base_url = base_url.rstrip('/')
+                  self.last_write = 0
+          
+              def request(self, path, method='GET', data=None, content_type='application/json', accept='application/vnd.github+json'):
+                  url = path if path.startswith('https://') else self.base_url + '/' + path
+                  if url.startswith('https://') and urllib.parse.urlparse(url).hostname not in ('api.github.com', 'uploads.github.com'):
+                      raise ValueError('Refusing to send credentials to a non-GitHub host')
+                  payload = data if isinstance(data, bytes) else json.dumps(data).encode() if data is not None else None
+                  headers = {'Authorization': 'Bearer ' + self.token, 'Accept': accept,
+                             'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'owned-repository-commit-snapshots',
+                             'Content-Type': content_type}
+                  for attempt in range(5):
+                      if method != 'GET':
+                          time.sleep(max(0, 8 - (time.monotonic() - self.last_write)))
+                          self.last_write = time.monotonic()
+                      try:
+                          request = urllib.request.Request(url, data=payload, headers=headers, method=method)
+                          open_request = urllib.request.urlopen
+                          if accept == 'application/octet-stream':
+                              class AssetRedirect(urllib.request.HTTPRedirectHandler):
+                                  def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+                                      redirected = super().redirect_request(req, fp, code, msg, hdrs, newurl)
+                                      if redirected is not None:
+                                          redirected.remove_header('Authorization')
+                                      return redirected
+                              open_request = urllib.request.build_opener(AssetRedirect()).open
+                          with open_request(request, timeout=120) as response:
+                              raw = response.read()
+                              return raw if accept == 'application/octet-stream' else json.loads(raw) if raw else None
+                      except urllib.error.HTTPError as error:
+                          message = error.read().decode('utf-8', 'replace')
+                          retryable = error.code in (429, 500, 502, 503, 504) or (error.code == 403 and ('rate limit' in message.lower() or error.headers.get('Retry-After')))
+                          if not retryable or attempt == 4:
+                              raise RuntimeError('GitHub HTTP ' + str(error.code) + ' for ' + method + ' ' + path + ': ' + message[:1000]) from None
+                          delay = max(int(error.headers.get('Retry-After', '0')), 60 * (attempt + 1))
+                          if error.headers.get('X-RateLimit-Remaining') == '0':
+                              delay = max(delay, int(error.headers.get('X-RateLimit-Reset', '0')) - int(time.time()) + 5)
+                          time.sleep(max(0, delay))
+          
+              def pages(self, path):
+                  result = []
+                  page = 1
+                  separator = '&' if '?' in path else '?'
+                  while True:
+                      batch = self.request(path + separator + 'per_page=100&page=' + str(page))
+                      if not batch:
+                          return result
+                      if not isinstance(batch, list):
+                          raise RuntimeError('Expected a paginated list: ' + path)
+                      result.extend(batch)
+                      page += 1
+          
+          MARKER = '<!-- commit-snapshot-automation:v1 -->'
+          
+          
+          def release_notes(full_name, sha, parents, metadata, files):
+              base = 'https://github.com/' + full_name
+              link = base + '/compare/' + parents[0] + '...' + sha if parents else base + '/commit/' + sha
+              rows = [MARKER, '## Commit snapshot',
+                      '- Commit: [`' + sha + '`](' + base + '/commit/' + sha + ')',
+                      '- Commit date: ' + metadata['date'],
+                      '- Message: ' + html.escape(metadata['subject']),
+                      '- [Inspect code changes](' + link + ')',
+                      '', 'Compared with the **first parent** of this commit (including merges).'
+                      if parents else 'Initial commit: all tracked files are listed as added.',
+                      'Source-code snapshot only; no compiled application or dependencies are bundled.',
+                      '', '## Exact changed files (' + str(len(files)) + ')',
+                      '', '| Change | File path | Previous path |', '| --- | --- | --- |']
+              labels = {'A': 'Added', 'M': 'Modified', 'D': 'Deleted', 'R': 'Renamed',
+                        'C': 'Copied', 'T': 'Type changed', 'U': 'Unmerged', 'X': 'Unknown', 'B': 'Broken pairing'}
+              def cell(value):
+                  # JSON escapes keep embedded newlines/tabs visible rather than corrupting tables.
+                  text = json.dumps(value, ensure_ascii=True)[1:-1]
+                  return '<code>' + html.escape(text).replace('|', '&#124;') + '</code>'
+              for item in files:
+                  rows.append('| ' + labels.get(item['status'][0], item['status']) + ' | ' + cell(item['path'])
+                              + ' | ' + (cell(item['previous_path']) if 'previous_path' in item else '') + ' |')
+              if not files:
+                  rows.append('| No file changes | | |')
+              return '\n'.join(rows) + '\n'
+          
+          
+          def git(repo, *args):
+              env = os.environ.copy()
+              env['GIT_TERMINAL_PROMPT'] = '0'
+              env['GIT_CONFIG_COUNT'] = '1'
+              env['GIT_CONFIG_KEY_0'] = 'credential.helper'
+              env['GIT_CONFIG_VALUE_0'] = ''
+              if env.get('GH_TOKEN'):
+                  import base64
+                  basic = base64.b64encode(('x-access-token:' + env['GH_TOKEN']).encode()).decode()
+                  env['GIT_CONFIG_COUNT'] = '2'
+                  env['GIT_CONFIG_KEY_1'] = 'http.https://github.com/.extraheader'
+                  env['GIT_CONFIG_VALUE_1'] = 'AUTHORIZATION: basic ' + basic
+              result = subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', '-C', str(repo), *args],
+                                      env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              if result.returncode:
+                  raise RuntimeError('git ' + args[0] + ': ' + result.stderr.decode('utf-8', 'replace')[-2000:])
+              return result.stdout
+          
+          
+          def branch_commits(repo):
+              return git(repo, 'rev-list', '--reverse', '--topo-order', '--branches').decode().splitlines()
+          
+          
+          def changed_files(repo, sha):
+              parents = git(repo, 'show', '-s', '--format=%P', sha).decode().split()
+              if parents:
+                  raw = git(repo, 'diff', '--name-status', '-z', '-M', parents[0], sha, '--')
+              else:
+                  raw = git(repo, 'diff-tree', '--root', '--no-commit-id', '--name-status', '-r', '-z', '-M', sha, '--')
+              parts = raw.decode('utf-8', 'surrogateescape').split('\0')
+              result = []
+              i = 0
+              while i < len(parts) and parts[i]:
+                  status, path = parts[i], parts[i + 1]
+                  i += 2
+                  entry = {'status': status, 'path': path}
+                  if status[0] in 'RC':
+                      entry['previous_path'] = path
+                      entry['path'] = parts[i]
+                      i += 1
+                  result.append(entry)
+              return result
+          
+          
+          def released_commits(repo, releases):
+              # target_commitish can be a moving branch: resolve the actual tag instead.
+              covered = set()
+              for release in releases:
+                  try:
+                      sha = git(repo, 'rev-parse', '--verify', 'refs/tags/' + release['tag_name'] + '^{commit}').decode().strip()
+                  except RuntimeError:
+                      if not release.get('draft'):
+                          raise  # A published release with an unresolved tag is not safe to guess.
+                      target = release.get('target_commitish', '')
+                      if len(target) != 40 or any(c not in '0123456789abcdef' for c in target):
+                          continue  # Unpublished drafts may not have created their tags yet.
+                      sha = git(repo, 'rev-parse', '--verify', target + '^{commit}').decode().strip()
+                  covered.add(sha)
+              return covered
+          
+          
+          def sync_repository(api, full_name, repo, dry_run=False, limit=300):
+              releases = api.pages('repos/' + full_name + '/releases')
+              covered = released_commits(repo, releases)
+              by_tag = {r['tag_name']: r for r in releases}
+              result = {'repo': full_name, 'commits': 0, 'created': 0, 'skipped': 0, 'deferred': 0}
+              commits = branch_commits(repo)
+              result['commits'] = len(commits)
+              for sha in commits:
+                  tag = 'snapshot-' + sha
+                  prior = by_tag.get(tag)
+                  resumable = prior and prior.get('draft') and MARKER in (prior.get('body') or '')
+                  if (sha in covered or prior) and not resumable:
+                      result['skipped'] += 1
+                      continue
+                  if dry_run or result['created'] >= limit:
+                      result['deferred'] += 1
+                      continue
+                  metadata_raw = git(repo, 'show', '-s', '--format=%cI%n%s', sha).decode('utf-8', 'replace').splitlines()
+                  metadata = {'date': metadata_raw[0], 'subject': metadata_raw[1] if len(metadata_raw) > 1 else ''}
+                  parents = git(repo, 'show', '-s', '--format=%P', sha).decode().split()
+                  files = changed_files(repo, sha)
+                  body = release_notes(full_name, sha, parents, metadata, files)
+                  large = len(body.encode('utf-8')) > 55000
+                  if large:
+                      body = body[:body.index('## Exact changed files')] + '## Exact changed files\n\n' + str(len(files)) + ' changed files. The complete list is attached as **changed-files.json** (including previous paths for renames).\n'
+                  if prior is None:
+                      # If a tag already exists it MUST point at the intended commit.
+                      tags = git(repo, 'tag', '--list', tag).decode().strip()
+                      if tags and git(repo, 'rev-parse', 'refs/tags/' + tag + '^{commit}').decode().strip() != sha:
+                          raise RuntimeError('Tag collision: ' + full_name + ':' + tag)
+                      try:
+                          release = api.request('repos/' + full_name + '/releases', method='POST', data={
+                              'tag_name': tag, 'target_commitish': sha,
+                              'name': metadata['date'][:10] + ' - ' + sha[:12] + ' - ' + metadata['subject'][:160],
+                              'body': body, 'draft': large, 'prerelease': False, 'make_latest': 'false',
+                              'generate_release_notes': False})
+                      except RuntimeError as error:
+                          if 'GitHub HTTP 422' not in str(error):
+                              raise
+                          # The daily catch-up and a push run can discover the same missing commit.
+                          raced = api.request('repos/' + full_name + '/releases/tags/' + tag)
+                          obj = api.request('repos/' + full_name + '/git/ref/tags/' + tag)['object']
+                          while obj['type'] == 'tag':
+                              obj = api.request('repos/' + full_name + '/git/tags/' + obj['sha'])['object']
+                          if raced.get('draft') or raced['tag_name'] != tag or obj['sha'] != sha:
+                              raise RuntimeError('Conflicting release is not a verified published snapshot') from error
+                          result['skipped'] += 1
+                          covered.add(sha)
+                          continue
+                  else:
+                      release = prior
+                  if large:
+                      import hashlib
+                      payload = json.dumps({'commit': sha, 'parent': parents[0] if parents else None, 'files': files}, ensure_ascii=True, indent=2).encode()
+                      assets = api.pages('repos/' + full_name + '/releases/' + str(release['id']) + '/assets')
+                      asset = next((a for a in assets if a['name'] == 'changed-files.json'), None)
+                      if asset is None:
+                          asset = api.request('https://uploads.github.com/repos/' + full_name + '/releases/' + str(release['id']) + '/assets?name=changed-files.json', method='POST', data=payload, content_type='application/json')
+                      asset_path = 'repos/' + full_name + '/releases/assets/' + str(asset['id'])
+                      check = api.request(asset_path)
+                      valid = check.get('state') == 'uploaded' and check.get('size') == len(payload)
+                      if valid:
+                          digest = check.get('digest')
+                          valid = (digest == 'sha256:' + hashlib.sha256(payload).hexdigest() if digest
+                                   else api.request(asset_path, accept='application/octet-stream') == payload)
+                      if not valid:
+                          raise RuntimeError('changed-files.json verification failed; release remains draft: '
+                                             + full_name + ':' + tag + '. Inspect/repair the asset before retrying; nothing was deleted.')
+                      release = api.request('repos/' + full_name + '/releases/' + str(release['id']), method='PATCH',
+                                            data={'draft': False, 'prerelease': False, 'make_latest': 'false', 'body': body})
+                  verified = api.request('repos/' + full_name + '/releases/' + str(release['id']))
+                  ref = api.request('repos/' + full_name + '/git/ref/tags/' + tag)
+                  obj = ref['object']
+                  while obj['type'] == 'tag':
+                      obj = api.request('repos/' + full_name + '/git/tags/' + obj['sha'])['object']
+                  if verified['draft'] or verified['tag_name'] != tag or verified['body'] != body or obj['sha'] != sha:
+                      raise RuntimeError('Release read-back verification failed: ' + full_name + ':' + tag)
+                  result['created'] += 1
+                  covered.add(sha)
+              return result
+          
+          
+          def discover_repositories(api, owner):
+              identity = api.request('user')['login']
+              if identity.casefold() != owner.casefold():
+                  raise RuntimeError('Credential belongs to ' + identity + ', expected ' + owner)
+              return sorted([r for r in api.pages('user/repos?affiliation=owner&sort=full_name&direction=asc')
+                             if r['owner']['login'].casefold() == owner.casefold()], key=lambda r: r['full_name'].casefold())
+          
+          
+          def selected_repositories(api, owner, repository=None):
+              if repository is None:
+                  return discover_repositories(api, owner)
+              import re
+              if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) or repository.split('/')[0].casefold() != owner.casefold():
+                  raise ValueError('Expected one repository owned by ' + owner)
+              info = api.request('repos/' + repository)
+              if info['owner']['login'].casefold() != owner.casefold():
+                  raise ValueError('Repository owner does not match ' + owner)
+              return [info]
+          
+          
+          def main():
+              import argparse
+              import pathlib
+              import tempfile
+              parser = argparse.ArgumentParser(description=__doc__)
+              parser.add_argument('--owner', default=os.environ.get('GH_OWNER', 'Hesham341'))
+              parser.add_argument('--repository', help='Restrict to one repository; supports its built-in Actions token')
+              parser.add_argument('--dry-run', action='store_true')
+              parser.add_argument('--cache-dir')
+              parser.add_argument('--max-new', type=int, default=300)
+              args = parser.parse_args()
+              token = os.environ.get('GH_TOKEN')
+              if not token:
+                  token = subprocess.check_output(['gh', 'auth', 'token'], text=True).strip()
+                  os.environ['GH_TOKEN'] = token
+              api = GitHub(token)
+              repositories = selected_repositories(api, args.owner, args.repository)
+              outcomes = []
+              errors = []
+              remaining = args.max_new
+              scratch = os.environ.get('HERMES_SCRATCH_DIR')
+              # On Windows the advertised TMPDIR may resolve to the system temp folder.
+              if not scratch and os.name == 'nt':
+                  scratch = str(pathlib.Path(os.environ['LOCALAPPDATA']) / 'hermes' / 'cache' / 'scratch')
+                  pathlib.Path(scratch).mkdir(parents=True, exist_ok=True)
+              with tempfile.TemporaryDirectory(prefix='commit-snapshots-', dir=scratch) as temporary:
+                  cache = pathlib.Path(args.cache_dir or temporary)
+                  cache.mkdir(parents=True, exist_ok=True)
+                  for info in repositories:
+                      full_name = info['full_name']
+                      try:
+                          if info.get('archived') or info.get('disabled'):
+                              raise RuntimeError('Repository is archived/disabled; cannot create releases. No settings were changed.')
+                          repo = cache / info['name']
+                          if not repo.exists():
+                              git(cache, 'clone', '--bare', 'https://github.com/' + full_name + '.git', str(repo))
+                          else:
+                              git(repo, 'fetch', '--force', '--prune', '--prune-tags', 'origin',
+                                  '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*')
+                          outcome = sync_repository(api, full_name, repo, args.dry_run, max(0, remaining))
+                          remaining -= outcome['created']
+                          outcomes.append(outcome)
+                          print(json.dumps(outcome), flush=True)
+                      except Exception as error:
+                          # Never suppress per-repository failures or report a partial run as success.
+                          errors.append({'repo': full_name, 'error': str(error)})
+                          print('ERROR: ' + full_name + ': ' + str(error), flush=True)
+              report = {'owner': args.owner, 'dry_run': args.dry_run, 'results': outcomes, 'errors': errors,
+                        'created': sum(r['created'] for r in outcomes),
+                        'skipped': sum(r['skipped'] for r in outcomes),
+                        'deferred': sum(r['deferred'] for r in outcomes)}
+              print('SUMMARY ' + json.dumps(report), flush=True)
+              if os.environ.get('GITHUB_STEP_SUMMARY'):
+                  lines = ['# Daily commit snapshots', '', '| Repository | Commits | Created | Already released | Pending |',
+                           '| --- | ---: | ---: | ---: | ---: |']
+                  for r in outcomes:
+                      lines.append('| ' + r['repo'] + ' | ' + ' | '.join(str(r[k]) for k in ('commits', 'created', 'skipped', 'deferred')) + ' |')
+                  if report['deferred']:
+                      lines.extend(['', 'Pending commits will be processed on the next daily/manual run (rate-limit safety cap: 300 new releases per run).'])
+                  for error in errors:
+                      lines.append('\n**Error in ' + error['repo'] + ':** ' + html.escape(error['error']))
+                  pathlib.Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+              return 1 if errors else 0
+          
+          
+          if __name__ == '__main__':
+              raise SystemExit(main())
+          PY
