@@ -1,45 +1,31 @@
-# [Project name]
+# The Boys Statistics | Replit workspace notes
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+This repository contains a planned Dota League Tracker. **Current status:** work in progress. The frontend homepage is a Replit building placeholder, so this is not yet a completed statistics application.
 
-## Run & Operate
+For the source-of-truth overview, see [README.md](README.md).
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+## Run and check
 
-## Stack
+Use Node.js 24 and pnpm from the repository root.
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- `pnpm install --frozen-lockfile`: install workspace dependencies
+- `pnpm --filter @workspace/dota-league dev`: run the current frontend
+- `pnpm --filter @workspace/api-server run dev`: start the Express API (configured for port 5000 in the original Replit setup)
+- `pnpm run typecheck`: type-check shared and workspace code
+- `pnpm run build`: run checks and build the packages
+- `pnpm --filter @workspace/api-spec run codegen`: regenerate API client/types when contracts change
 
-## Where things live
+## Workspace map
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/dota-league/`: frontend
+- `artifacts/api-server/`: backend and health route
+- `artifacts/mockup-sandbox/`: mockup preview support
+- `lib/`: shared packages
+- `scripts/`: workspace utilities
 
-## Architecture decisions
+## Safe development notes
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
-
-## Product
-
-_Describe the high-level user-facing capabilities of this app once they exist._
-
-## User preferences
-
-_Populate as you build — explicit user instructions worth remembering across sessions._
-
-## Gotchas
-
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- The workspace references `DATABASE_URL` for PostgreSQL operations. Configure it locally and never commit secrets.
+- Never run `pnpm --filter @workspace/db run push` against a real database without verifying the destination and migration.
+- Placeholder content or a successful build alone does not mean the planned statistics features are implemented or that a production site exists.
+- Document confirmed data providers, computed statistics and live hosting only once they are implemented and verified.
